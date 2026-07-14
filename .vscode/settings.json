@@ -1,0 +1,16 @@
+{
+  // CMake Tools drives configure + build. Uses the same "build/" dir as the Makefile.
+  "cmake.sourceDirectory": "${workspaceFolder}",
+  "cmake.buildDirectory": "${workspaceFolder}/build",
+  "cmake.generator": "Ninja",
+  "cmake.configureArgs": [
+    "-DBUILD_TESTING=ON"
+  ],
+  // Debug build by default so breakpoints and symbols work.
+  "cmake.configureSettings": {
+    "CMAKE_BUILD_TYPE": "Debug"
+  },
+  // Export compile_commands.json so the C/C++ extension resolves includes.
+  "cmake.configureOnOpen": true,
+  "C_Cpp.default.compileCommands": "${workspaceFolder}/build/compile_commands.json"
+}

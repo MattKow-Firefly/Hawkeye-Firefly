@@ -1,0 +1,76 @@
+{
+    "version": "2.0.0",
+    "tasks": [
+        {
+            "label": "hawkeye: build (Debug)",
+            "type": "shell",
+            "command": "make",
+            "args": [
+                "build",
+                "BUILD_TYPE=Debug",
+                "CMAKE_EXTRA=-DCMAKE_EXPORT_COMPILE_COMMANDS=ON"
+            ],
+            "options": {
+                "cwd": "${workspaceFolder}"
+            },
+            "problemMatcher": [
+                "$gcc"
+            ],
+            "group": {
+                "kind": "build",
+                "isDefault": true
+            },
+            "detail": "Configure (if needed) and build hawkeye + tests with debug symbols."
+        },
+        {
+            "label": "hawkeye: build (Release)",
+            "type": "shell",
+            "command": "make",
+            "args": [
+                "release",
+                "CMAKE_EXTRA=-DCMAKE_EXPORT_COMPILE_COMMANDS=ON"
+            ],
+            "options": {
+                "cwd": "${workspaceFolder}"
+            },
+            "problemMatcher": [
+                "$gcc"
+            ],
+            "group": "build",
+            "detail": "Optimized build (same as 'make release')."
+        },
+        {
+            "label": "hawkeye: test",
+            "type": "shell",
+            "command": "make",
+            "args": [
+                "test",
+                "BUILD_TYPE=Debug"
+            ],
+            "options": {
+                "cwd": "${workspaceFolder}"
+            },
+            "problemMatcher": [
+                "$gcc"
+            ],
+            "group": {
+                "kind": "test",
+                "isDefault": true
+            },
+            "detail": "Build and run the ctest suite."
+        },
+        {
+            "label": "hawkeye: clean",
+            "type": "shell",
+            "command": "make",
+            "args": [
+                "clean"
+            ],
+            "options": {
+                "cwd": "${workspaceFolder}"
+            },
+            "problemMatcher": [],
+            "detail": "Remove the build directory."
+        }
+    ]
+}
