@@ -3,6 +3,7 @@
 
 #include "raylib.h"
 #include "theme.h"
+#include "input_gamepad.h"
 #include <stdbool.h>
 
 typedef enum {
@@ -72,7 +73,9 @@ void scene_init(scene_t *s);
 void scene_update_camera(scene_t *s, Vector3 vehicle_pos, Quaternion vehicle_rot);
 
 // Handle camera mode toggle input.
-void scene_handle_input(scene_t *s);
+// gp may be NULL; when non-NULL, the gamepad camera action toggles the camera
+// mode just like the C key.
+void scene_handle_input(scene_t *s, const input_gamepad_t *gp);
 
 // Draw the world (ground, sky). Call between BeginMode3D/EndMode3D.
 void scene_draw(const scene_t *s);

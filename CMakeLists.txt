@@ -43,6 +43,7 @@ if(NOT BUILD_TESTING_ONLY)
         src/data_source_mavlink.c
         src/net_mp.c
         src/input_gamepad.c
+        src/lasers.c
         src/vehicle.c
         src/scene.c
         src/hud.c

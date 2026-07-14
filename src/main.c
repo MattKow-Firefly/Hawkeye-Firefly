@@ -30,6 +30,7 @@
 #include "tactical_hud.h"
 #include "net_mp.h"
 #include "input_gamepad.h"
+#include "lasers.h"
 
 #define MAX_VEHICLES 16
 #define EARTH_RADIUS 6371000.0
@@ -494,6 +495,10 @@ int main(int argc, char *argv[]) {
     input_gamepad_init(&gpad, 0);
     bool show_gamepad_menu = true;  // Menu button toggles this overlay
 
+    // ── Lasers fired from the drone's legs (right trigger / X key) ──
+    lasers_t lasers;
+    lasers_init(&lasers);
+
     // ── LAN multiplayer (peer discovery + position sharing) ──
     // Local vehicles occupy slots [0, local_count); network peers are placed in
     // the slots above, growing vehicle_count as they appear. peer_slot_session
@@ -784,7 +789,7 @@ int main(int argc, char *argv[]) {
 
         // Handle input (blocked during marker label entry)
         if (!marker_input.active) {
-        scene_handle_input(&scene);
+        scene_handle_input(&scene, &gpad);
 
         // P key: switch between Swarm / Ghost / Grid modes during multi-file replay
         // P key: mode switcher for multi-file replay
@@ -914,8 +919,8 @@ int main(int argc, char *argv[]) {
             hud.show_help = !hud.show_help;
         }
 
-        // Cycle HUD mode: Console → Tactical → Off (H key or gamepad Y)
-        if (IsKeyPressed(KEY_H) || input_gamepad_pressed(&gpad, GP_ACTION_CAMERA_MODE)) {
+        // Cycle HUD mode: Console → Tactical → Off
+        if (IsKeyPressed(KEY_H)) {
             hud_mode_t prev_mode = hud.mode;
             hud.mode = (hud.mode + 1) % HUD_MODE_COUNT;
             const char *mode_names[] = { "Console HUD", "Tactical HUD", "HUD Off" };
@@ -1072,9 +1077,15 @@ int main(int argc, char *argv[]) {
         if (input_gamepad_pressed(&gpad, GP_ACTION_MENU)) {
             show_gamepad_menu = !show_gamepad_menu;
         }
-        if (input_gamepad_pressed(&gpad, GP_ACTION_SHOOT)) {
-            // TODO: hook your "shoot" behavior here. Placeholder feedback:
-            hud_toast(&hud, "SHOOT", 0.6f);
+        // Right trigger (or X key for keyboard testing) fires the leg lasers
+        // from the drone currently in focus. (F is taken by the terrain toggle.)
+        if (input_gamepad_pressed(&gpad, GP_ACTION_SHOOT) || IsKeyPressed(KEY_X)) {
+            const vehicle_t *shooter = &vehicles[selected];
+            if (shooter->active) {
+                lasers_fire_from(&lasers, shooter->position,
+                                 shooter->heading_deg, shooter->pitch_deg,
+                                 shooter->model_scale);
+            }
         }
 
         // Marker label text input — consumes all keyboard while active
@@ -1291,6 +1302,9 @@ int main(int argc, char *argv[]) {
             }
         }
 
+        // Advance lasers (ground plane at y=0).
+        lasers_update(&lasers, GetFrameTime(), 0.0f);
+
         // Update debug panel
         debug_panel_update(&dbg_panel, GetFrameTime());
 
@@ -1330,6 +1344,9 @@ int main(int argc, char *argv[]) {
                                      classic_colors);
                     }
                 }
+
+                // Lasers (world-space projectiles)
+                lasers_draw(&lasers);
                 // Draw frame marker spheres and system marker cubes for all drones
                 for (int i = 0; i < vehicle_count; i++) {
                     if (is_replay && markers[i].count > 0) {

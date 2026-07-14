@@ -495,7 +495,7 @@ void scene_update_camera(scene_t *s, Vector3 vehicle_pos, Quaternion vehicle_rot
     }
 }
 
-void scene_handle_input(scene_t *s) {
+void scene_handle_input(scene_t *s, const input_gamepad_t *gp) {
     // Alt+number: fullscreen ortho views
     if (IsKeyDown(KEY_LEFT_ALT) || IsKeyDown(KEY_RIGHT_ALT)) {
         static const int keys[] = { KEY_ONE, KEY_TWO, KEY_THREE, KEY_FOUR, KEY_FIVE, KEY_SIX, KEY_SEVEN };
@@ -518,7 +518,7 @@ void scene_handle_input(scene_t *s) {
         }
     }
 
-    if (IsKeyPressed(KEY_C)) {
+    if (IsKeyPressed(KEY_C) || (gp && input_gamepad_pressed(gp, GP_ACTION_CAMERA_MODE))) {
         s->ortho_mode = ORTHO_NONE;  // return to perspective on camera toggle
         s->free_track = false;
         s->ortho_pan = (Vector3){0};
