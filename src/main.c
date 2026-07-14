@@ -28,6 +28,7 @@
 #include "replay_markers.h"
 #include "ui_marker_input.h"
 #include "tactical_hud.h"
+#include "net_mp.h"
 
 #define MAX_VEHICLES 16
 #define EARTH_RADIUS 6371000.0
@@ -36,9 +37,18 @@
 
 #define CHORD_TIMEOUT_S 0.3
 
+// No-op data-source backend for network peers. Their state is written directly
+// into sources[slot].state each frame (see the multiplayer block in the main
+// loop), so poll/close do nothing and there is no seek/offset.
+static void mp_src_poll(data_source_t *ds, float dt) { (void)ds; (void)dt; }
+static void mp_src_close(data_source_t *ds) { (void)ds; }
+static const data_source_ops_t MP_SRC_OPS = { mp_src_poll, NULL, NULL, mp_src_close };
+
 static void print_usage(const char *prog) {
     printf("Usage: %s [options]\n", prog);
     printf("  -udp <port>    UDP base port (default: 19410)\n");
+    printf("  -mp            Enable LAN multiplayer (share drone position with peers)\n");
+    printf("  -mp-port <p>   Multiplayer UDP broadcast port (default: %d)\n", MP_DEFAULT_PORT);
     printf("  -n <count>     Number of vehicles (default: 1, max: %d)\n", MAX_VEHICLES);
     printf("  -mc            Multicopter model (default)\n");
     printf("  -fw            Fixed-wing model\n");
@@ -159,10 +169,16 @@ int main(int argc, char *argv[]) {
     char *replay_paths[MAX_VEHICLES] = {0};
     int num_replay_files = 0;
     bool ghost_mode = false;
+    bool mp_enabled = false;
+    uint16_t mp_port = MP_DEFAULT_PORT;
 
     for (int i = 1; i < argc; i++) {
         if (strcmp(argv[i], "-udp") == 0 && i + 1 < argc) {
             base_port = (uint16_t)atoi(argv[++i]);
+        } else if (strcmp(argv[i], "-mp") == 0) {
+            mp_enabled = true;
+        } else if (strcmp(argv[i], "-mp-port") == 0 && i + 1 < argc) {
+            mp_port = (uint16_t)atoi(argv[++i]);
         } else if (strcmp(argv[i], "-n") == 0 && i + 1 < argc) {
             vehicle_count = atoi(argv[++i]);
             if (vehicle_count < 1) vehicle_count = 1;
@@ -218,6 +234,14 @@ int main(int argc, char *argv[]) {
     data_source_t sources[MAX_VEHICLES];
     memset(sources, 0, sizeof(sources));
     bool is_replay = (num_replay_files > 0);
+
+    // Multiplayer requires a live (non-replay) session and a fixed shared NED
+    // origin so every peer places remote drones in the same world frame.
+    if (mp_enabled && is_replay) {
+        fprintf(stderr, "-mp ignored during ULog replay\n");
+        mp_enabled = false;
+    }
+    if (mp_enabled) origin_specified = true;
 
     if (is_replay) {
         for (int i = 0; i < num_replay_files; i++) {
@@ -464,6 +488,27 @@ int main(int argc, char *argv[]) {
     marker_input_t marker_input = {0};
     marker_input.target = -1;
 
+    // ── LAN multiplayer (peer discovery + position sharing) ──
+    // Local vehicles occupy slots [0, local_count); network peers are placed in
+    // the slots above, growing vehicle_count as they appear. peer_slot_session
+    // maps a slot to the peer session currently assigned to it (0 = free).
+    mp_t mp;
+    bool mp_active = false;
+    int local_count = vehicle_count;
+    uint32_t peer_slot_session[MAX_VEHICLES];
+    memset(peer_slot_session, 0, sizeof(peer_slot_session));
+    double mp_lat0 = origin_lat * (M_PI / 180.0);
+    double mp_lon0 = origin_lon * (M_PI / 180.0);
+    double mp_alt0 = origin_alt;
+    if (mp_enabled) {
+        if (mp_init(&mp, mp_port, sources[0].sysid, NULL) == 0) {
+            mp_active = true;
+            printf("Multiplayer: broadcasting drone position on UDP port %u\n", mp_port);
+        } else {
+            fprintf(stderr, "Multiplayer init failed on port %u (running solo)\n", mp_port);
+        }
+    }
+
     // Main loop
     while (!WindowShouldClose()) {
         // Guard: if vehicle_count is somehow 0, exit the loop to avoid
@@ -541,6 +586,64 @@ int main(int argc, char *argv[]) {
                 }
             }
             last_pos[i] = vehicles[i].position;
+        }
+
+        // ── Multiplayer: broadcast our drone, ingest peers into vehicle slots ──
+        // Runs after the poll loop so we broadcast the position just polled this
+        // frame, not last frame's. Peer state written here is consumed by the
+        // next frame's vehicle_update (peer sources use MP_SRC_OPS, whose poll is
+        // a no-op, so the state we write here survives until then).
+        if (mp_active) {
+            mp_set_local(&mp, &sources[0].state, sources[0].sysid, sources[0].mav_type);
+            mp_poll(&mp, GetTime());
+
+            for (int p = 0; p < MP_MAX_PEERS; p++) {
+                mp_peer_t *pe = &mp.peers[p];
+                if (!pe->used) continue;
+
+                // Find this peer's slot, or claim the lowest free one.
+                int slot = -1;
+                for (int s = local_count; s < MAX_VEHICLES; s++)
+                    if (peer_slot_session[s] == pe->session_id) { slot = s; break; }
+                if (slot < 0) {
+                    for (int s = local_count; s < MAX_VEHICLES; s++)
+                        if (peer_slot_session[s] == 0) { slot = s; break; }
+                    if (slot < 0) continue;  // no room for more peers
+                    peer_slot_session[slot] = pe->session_id;
+                    vehicle_init(&vehicles[slot], model_idx, scene.lighting_shader);
+                    vehicles[slot].color = scene.theme->drone_palette[slot % 16];
+                    vehicles[slot].lat0 = mp_lat0;
+                    vehicles[slot].lon0 = mp_lon0;
+                    vehicles[slot].alt0 = mp_alt0;
+                    vehicles[slot].origin_set = true;
+                    sources[slot].ops = &MP_SRC_OPS;
+                    if (slot + 1 > vehicle_count) vehicle_count = slot + 1;
+                }
+
+                // Feed the peer's latest state into its source for vehicle_update.
+                sources[slot].state = pe->state;
+                sources[slot].connected = true;
+                sources[slot].sysid = pe->sysid;
+                if (pe->mav_type && sources[slot].mav_type != pe->mav_type) {
+                    sources[slot].mav_type = pe->mav_type;
+                    vehicle_set_type(&vehicles[slot], pe->mav_type);
+                }
+            }
+
+            // Mark slots whose peer has timed out as disconnected. The slot stays
+            // allocated (and the model stays loaded) for the rest of the session.
+            for (int s = local_count; s < vehicle_count; s++) {
+                if (peer_slot_session[s] == 0) continue;
+                bool present = false;
+                for (int p = 0; p < MP_MAX_PEERS; p++)
+                    if (mp.peers[p].used && mp.peers[p].session_id == peer_slot_session[s]) {
+                        present = true; break;
+                    }
+                if (!present) {
+                    sources[s].connected = false;
+                    vehicles[s].active = false;
+                }
+            }
         }
 
         // Lazy-resolve system marker positions once origin is established
@@ -1429,6 +1532,7 @@ int main(int argc, char *argv[]) {
     }
 
     // Cleanup
+    if (mp_active) mp_close(&mp);
     ortho_panel_cleanup(&ortho);
     hud_cleanup(&hud);
     for (int i = 0; i < vehicle_count; i++) {

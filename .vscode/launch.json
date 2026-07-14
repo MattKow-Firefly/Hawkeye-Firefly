@@ -28,6 +28,34 @@
       ]
     },
     {
+      "name": "Hawkeye: multiplayer",
+      "type": "cppdbg",
+      "request": "launch",
+      "program": "${command:cmake.launchTargetPath}",
+      "args": [
+          "-n",
+          "1",
+          "-mc",
+          "-mp"
+      ],
+      "stopAtEntry": false,
+      // -mp: broadcast this drone's position and show LAN peers. Start PX4 SITL
+      // first. Peers on the same Wi-Fi are discovered automatically.
+      "cwd": "${workspaceFolder}/build",
+      "environment": [],
+      "externalConsole": false,
+      "MIMode": "gdb",
+      "miDebuggerPath": "/usr/bin/gdb",
+      "preLaunchTask": "hawkeye: build (Release)",
+      "setupCommands": [
+        {
+          "description": "Enable pretty-printing for gdb",
+          "text": "-enable-pretty-printing",
+          "ignoreFailures": true
+        }
+      ]
+    },
+    {
       "name": "Hawkeye: replay ULog (pick file)",
       "type": "cppdbg",
       "request": "launch",
