@@ -14,6 +14,10 @@
 #define GRID_SPACING     10.0f
 #define GRID_MAJOR_EVERY 5
 
+// How quickly the locked chase yaw eases toward the drone's yaw (per second).
+// Lower = more lag/float; higher = snappier. ~4 gives a natural slight delay.
+#define CHASE_LOCK_RESPONSE 4.0f
+
 // ── Grammar-based terrain texture: packed dirt atlas ─────────────────────────
 // 224 tiles at 16×16 in a 256×224 atlas (16 cols × 14 rows).
 // 7 edge profiles × 32 gradient-reach variants per profile.
@@ -236,7 +240,7 @@ static Texture2D gen_ground_texture(void) {
 }
 
 void scene_init(scene_t *s) {
-    s->cam_mode = CAM_MODE_CHASE;
+    s->cam_mode = CAM_MODE_CHASE_LOCKED;
     theme_registry_init(&s->theme_reg);
     s->theme_index = 0;
     s->theme_1988_active = false;
@@ -247,6 +251,8 @@ void scene_init(scene_t *s) {
     s->chase_distance = 3.0f;
     s->chase_yaw = 0.0f;
     s->chase_pitch = 0.4f;  // ~23° above horizontal
+    s->chase_lock_yaw = 0.0f;
+    s->chase_lock_snap = true;
     s->fpv_yaw = 0.0f;
     s->fpv_pitch = 0.0f;
 
@@ -343,6 +349,46 @@ static void update_chase_camera(scene_t *s, Vector3 pos) {
     s->camera.up = (Vector3){0, 1, 0};
 }
 
+// Like chase, but the orbit yaw follows the drone's heading so the camera stays
+// behind it. The follow is smoothed (eased toward the target each frame) so it
+// trails the drone's yaw slightly instead of locking rigidly. Pitch/distance are
+// shared with the normal chase camera and remain user-adjustable.
+static void update_chase_locked_camera(scene_t *s, Vector3 pos, Quaternion rot) {
+    // Drone forward, projected onto the horizontal plane (yaw only — the camera
+    // shouldn't tip with the drone's pitch/roll).
+    Vector3 fwd = Vector3RotateByQuaternion((Vector3){0, 0, -1}, rot);
+    float len = sqrtf(fwd.x * fwd.x + fwd.z * fwd.z);
+    if (len > 1e-5f) {
+        float hx = fwd.x / len, hz = fwd.z / len;
+        // Orbit yaw that puts the camera directly behind the drone (opposite its
+        // facing direction), consistent with the chase spherical formula below.
+        float target = atan2f(-hx, -hz);
+
+        if (s->chase_lock_snap) {
+            s->chase_lock_yaw = target;  // entering the mode: no swing-in
+            s->chase_lock_snap = false;
+        } else {
+            float diff = target - s->chase_lock_yaw;
+            while (diff >  PI) diff -= 2.0f * PI;   // shortest angular path
+            while (diff < -PI) diff += 2.0f * PI;
+            float k = CHASE_LOCK_RESPONSE * GetFrameTime();
+            if (k > 1.0f) k = 1.0f;
+            s->chase_lock_yaw += diff * k;
+            // Optionally lock it to target for testing
+            //s->chase_lock_yaw = target;
+        }
+    }
+
+    float dist = s->chase_distance;
+    float cam_x = pos.x + dist * cosf(s->chase_pitch) * sinf(s->chase_lock_yaw);
+    float cam_y = pos.y + dist * sinf(s->chase_pitch);
+    float cam_z = pos.z + dist * cosf(s->chase_pitch) * cosf(s->chase_lock_yaw);
+
+    s->camera.target = pos;
+    s->camera.position = (Vector3){cam_x, cam_y, cam_z};
+    s->camera.up = (Vector3){0, 1, 0};
+}
+
 static void update_fpv_camera(scene_t *s, Vector3 pos, Quaternion rot) {
     s->camera.position = pos;
 
@@ -423,6 +469,9 @@ void scene_update_camera(scene_t *s, Vector3 vehicle_pos, Quaternion vehicle_rot
     switch (s->cam_mode) {
         case CAM_MODE_CHASE:
             update_chase_camera(s, vehicle_pos);
+            break;
+        case CAM_MODE_CHASE_LOCKED:
+            update_chase_locked_camera(s, vehicle_pos, vehicle_rot);
             break;
         case CAM_MODE_FPV:
             update_fpv_camera(s, vehicle_pos, vehicle_rot);
@@ -523,12 +572,14 @@ void scene_handle_input(scene_t *s, const input_gamepad_t *gp) {
         s->free_track = false;
         s->ortho_pan = (Vector3){0};
         s->cam_mode = (s->cam_mode + 1) % CAM_MODE_COUNT;
-        const char *names[] = {"Chase", "FPV", "Free"};
+        const char *names[] = {"Chase", "Chase Lock", "FPV", "Free"};
         printf("Camera: %s\n", names[s->cam_mode]);
 
         s->camera.up = (Vector3){0, 1, 0};
         s->fpv_yaw = 0.0f;
         s->fpv_pitch = 0.0f;
+        // Snap the locked-chase follow-yaw on entry so it doesn't swing in.
+        if (s->cam_mode == CAM_MODE_CHASE_LOCKED) s->chase_lock_snap = true;
     }
 
     if (IsKeyPressed(KEY_F)) {
@@ -571,6 +622,11 @@ void scene_handle_input(scene_t *s, const input_gamepad_t *gp) {
         Vector2 delta = GetMouseDelta();
         if (s->cam_mode == CAM_MODE_CHASE) {
             s->chase_yaw   -= delta.x * 0.005f;
+            s->chase_pitch += delta.y * 0.005f;
+            if (s->chase_pitch < -1.2f) s->chase_pitch = -1.2f;
+            if (s->chase_pitch > 1.4f) s->chase_pitch = 1.4f;
+        } else if (s->cam_mode == CAM_MODE_CHASE_LOCKED) {
+            // Yaw is driven by the drone; allow pitch adjustment only.
             s->chase_pitch += delta.y * 0.005f;
             if (s->chase_pitch < -1.2f) s->chase_pitch = -1.2f;
             if (s->chase_pitch > 1.4f) s->chase_pitch = 1.4f;
@@ -620,7 +676,7 @@ void scene_handle_input(scene_t *s, const input_gamepad_t *gp) {
     if (!IsKeyDown(KEY_LEFT_ALT) && !IsKeyDown(KEY_RIGHT_ALT) && s->ortho_mode == ORTHO_NONE) {
         float wheel = GetMouseWheelMove();
         if (wheel != 0.0f) {
-            if (s->cam_mode == CAM_MODE_CHASE) {
+            if (s->cam_mode == CAM_MODE_CHASE || s->cam_mode == CAM_MODE_CHASE_LOCKED) {
                 // Chase: combined distance + FOV for natural zoom feel
                 s->chase_distance -= wheel * 0.5f;
                 if (s->chase_distance < 1.5f) s->chase_distance = 1.5f;

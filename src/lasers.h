@@ -17,7 +17,7 @@
 
 #define LASERS_MAX        128
 #define LASER_SPEED_MPS   60.0f    // medium speed
-#define LASER_MAX_RANGE_M 1000.0f  // despawn distance
+#define LASER_MAX_RANGE_M 500.0f   // despawn distance
 #define LASER_LENGTH_M    3.0f     // pill core length
 #define LASER_RADIUS_M    0.10f    // pill radius (collision + visual)
 

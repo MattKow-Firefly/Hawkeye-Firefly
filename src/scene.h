@@ -8,6 +8,7 @@
 
 typedef enum {
     CAM_MODE_CHASE = 0,
+    CAM_MODE_CHASE_LOCKED,  // chase that follows the drone's yaw (with slight lag)
     CAM_MODE_FPV,
     CAM_MODE_FREE,
     CAM_MODE_COUNT
@@ -33,6 +34,8 @@ typedef struct {
     float chase_distance;
     float chase_yaw;    // horizontal orbit angle (radians)
     float chase_pitch;  // vertical orbit angle (radians)
+    float chase_lock_yaw;  // smoothed follow-yaw for CAM_MODE_CHASE_LOCKED (radians)
+    bool  chase_lock_snap; // snap follow-yaw to target on next update (mode entry)
     float fpv_yaw;      // gimbal yaw offset (radians)
     float fpv_pitch;    // gimbal pitch offset (radians, 0 = forward, negative = down)
     // Grid shader
