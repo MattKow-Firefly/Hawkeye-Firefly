@@ -29,6 +29,7 @@
 #include "ui_marker_input.h"
 #include "tactical_hud.h"
 #include "net_mp.h"
+#include "input_gamepad.h"
 
 #define MAX_VEHICLES 16
 #define EARTH_RADIUS 6371000.0
@@ -488,6 +489,11 @@ int main(int argc, char *argv[]) {
     marker_input_t marker_input = {0};
     marker_input.target = -1;
 
+    // ── Gamepad (viewer UI actions only; QGC still owns flight control) ──
+    input_gamepad_t gpad;
+    input_gamepad_init(&gpad, 0);
+    bool show_gamepad_menu = true;  // Menu button toggles this overlay
+
     // ── LAN multiplayer (peer discovery + position sharing) ──
     // Local vehicles occupy slots [0, local_count); network peers are placed in
     // the slots above, growing vehicle_count as they appear. peer_slot_session
@@ -773,6 +779,9 @@ int main(int argc, char *argv[]) {
             UnloadDroppedFiles(dropped);
         }
 
+        // Poll the gamepad once per frame before any action queries.
+        input_gamepad_update(&gpad);
+
         // Handle input (blocked during marker label entry)
         if (!marker_input.active) {
         scene_handle_input(&scene);
@@ -905,8 +914,8 @@ int main(int argc, char *argv[]) {
             hud.show_help = !hud.show_help;
         }
 
-        // Cycle HUD mode: Console → Tactical → Off
-        if (IsKeyPressed(KEY_H)) {
+        // Cycle HUD mode: Console → Tactical → Off (H key or gamepad Y)
+        if (IsKeyPressed(KEY_H) || input_gamepad_pressed(&gpad, GP_ACTION_CAMERA_MODE)) {
             hud_mode_t prev_mode = hud.mode;
             hud.mode = (hud.mode + 1) % HUD_MODE_COUNT;
             const char *mode_names[] = { "Console HUD", "Tactical HUD", "HUD Off" };
@@ -1058,6 +1067,15 @@ int main(int argc, char *argv[]) {
             }
         }
         } // end !marker_input.active guard
+
+        // ── Gamepad UI actions (QGC keeps flight control; these are viewer-only) ──
+        if (input_gamepad_pressed(&gpad, GP_ACTION_MENU)) {
+            show_gamepad_menu = !show_gamepad_menu;
+        }
+        if (input_gamepad_pressed(&gpad, GP_ACTION_SHOOT)) {
+            // TODO: hook your "shoot" behavior here. Placeholder feedback:
+            hud_toast(&hud, "SHOOT", 0.6f);
+        }
 
         // Marker label text input — consumes all keyboard while active
         if (marker_input.active) {
@@ -1526,6 +1544,11 @@ int main(int argc, char *argv[]) {
             if (marker_input.active) {
                 marker_input_draw(&marker_input, hud.font_label, hud.font_value,
                                   scene.theme, GetScreenWidth(), GetScreenHeight());
+            }
+
+            // Gamepad state overlay (toggle with the Menu button)
+            if (show_gamepad_menu) {
+                input_gamepad_draw_debug(&gpad, GetScreenWidth(), GetScreenHeight());
             }
 
         EndDrawing();
