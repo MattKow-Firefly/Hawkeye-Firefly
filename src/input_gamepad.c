@@ -67,8 +67,9 @@ static const gp_profile_t GP_PROFILES[] = {
         .platform = GP_PLAT_LINUX,
         .bindings = {
             [GP_ACTION_SHOOT]       = { .button = -1, .axis = 5 },  // right trigger
-            [GP_ACTION_MENU]        = { .button = 7,  .axis = -1 }, // Start / Menu
+            [GP_ACTION_PAUSE]       = { .button = 7,  .axis = -1 }, // Start / Menu
             [GP_ACTION_CAMERA_MODE] = { .button = 3,  .axis = -1 }, // Y
+            [GP_ACTION_OVERLAY]     = { .button = 6,  .axis = -1 }, // Back / View
         },
     },
     // Add more profiles here (other controllers, Windows, macOS, …).
@@ -205,10 +206,10 @@ void input_gamepad_draw_debug(const input_gamepad_t *ig, int screen_w, int scree
     (void)screen_h;
 #if GP_SHOW_RAW_INPUT
     const int w = 240;
-    const int h = ig->connected ? 374 : 52;
+    const int h = ig->connected ? 396 : 52;
 #else
     const int w = 226;
-    const int h = ig->connected ? 228 : 52;
+    const int h = ig->connected ? 250 : 52;
 #endif
     const int x = screen_w - w - 12, y = 12;
     DrawRectangle(x, y, w, h, (Color){ 0, 0, 0, 170 });
@@ -234,9 +235,10 @@ void input_gamepad_draw_debug(const input_gamepad_t *ig, int screen_w, int scree
     cy += 22;
 
     // Semantic actions (what Hawkeye reacts to)
-    draw_dot(cx + 4, cy, ig->down[GP_ACTION_SHOOT],       "RT  Shoot");     cy += 22;
-    draw_dot(cx + 4, cy, ig->down[GP_ACTION_MENU],        "Menu");          cy += 22;
-    draw_dot(cx + 4, cy, ig->down[GP_ACTION_CAMERA_MODE], "Y   Camera");    cy += 24;
+    draw_dot(cx + 4, cy, ig->down[GP_ACTION_SHOOT],       "RT   Shoot");    cy += 22;
+    draw_dot(cx + 4, cy, ig->down[GP_ACTION_PAUSE],       "Menu Pause");    cy += 22;
+    draw_dot(cx + 4, cy, ig->down[GP_ACTION_CAMERA_MODE], "Y    Camera");   cy += 22;
+    draw_dot(cx + 4, cy, ig->down[GP_ACTION_OVERLAY],     "View Overlay");  cy += 24;
 
 #if GP_SHOW_RAW_INPUT
     // ── Raw diagnostic — press a button and note which index lights up ──

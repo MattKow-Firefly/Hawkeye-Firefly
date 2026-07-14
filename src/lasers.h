@@ -16,10 +16,11 @@
 #include "raylib.h"
 
 #define LASERS_MAX        128
-#define LASER_SPEED_MPS   60.0f    // medium speed
+#define LASER_SPEED_MPS   75.0f    // medium speed
 #define LASER_MAX_RANGE_M 500.0f   // despawn distance
-#define LASER_LENGTH_M    3.0f     // pill core length
+#define LASER_LENGTH_M    2.0f     // pill core length
 #define LASER_RADIUS_M    0.10f    // pill radius (collision + visual)
+#define LASER_FIRE_INTERVAL_S 0.20f  // gap between shots while the trigger is held
 
 typedef struct {
     bool    active;

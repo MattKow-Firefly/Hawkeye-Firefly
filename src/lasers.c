@@ -66,8 +66,8 @@ void lasers_fire_from(lasers_t *L, Vector3 body_pos,
 
     // Leg spawn points: a bit below the body, offset left/right, nudged forward.
     float half_w   = scale * 0.30f;
-    float drop     = scale * 0.18f;
-    float fwd_off  = scale * 0.10f;
+    float drop     = scale * -0.02f;
+    float fwd_off  = scale * 0.15f;
     Vector3 base = Vector3Add(body_pos, Vector3Scale(fwd, fwd_off));
     base.y -= drop;
     Vector3 leg_l = Vector3Subtract(base, Vector3Scale(right, half_w));
@@ -108,7 +108,8 @@ void lasers_draw(const lasers_t *L) {
 
         // Translucent outer shell for a bit of glow, solid bright core, rounded
         // caps to complete the pill.
-        DrawCylinderEx(l->cap_a, l->cap_b, l->radius * 2.0f, l->radius * 2.0f, 8, glow);
+        // Nah, disable that, only show the actual laser beam
+        //DrawCylinderEx(l->cap_a, l->cap_b, l->radius * 1.5f, l->radius * 1.5f, 8, glow);
         DrawCylinderEx(l->cap_a, l->cap_b, l->radius, l->radius, 10, core);
         DrawSphere(l->cap_a, l->radius, core);
         DrawSphere(l->cap_b, l->radius, core);

@@ -19,8 +19,9 @@
 // NOTE: the A button is intentionally left unbound — QGC uses it to arm.
 typedef enum {
     GP_ACTION_SHOOT,        // right trigger
-    GP_ACTION_MENU,         // Menu/Start button
-    GP_ACTION_CAMERA_MODE,  // Y button — cycle camera / HUD mode
+    GP_ACTION_PAUSE,        // Menu/Start button — toggle pause
+    GP_ACTION_CAMERA_MODE,  // Y button — cycle camera mode
+    GP_ACTION_OVERLAY,      // View/Back button — toggle the gamepad overlay
     GP_ACTION_COUNT
 } gp_action_t;
 

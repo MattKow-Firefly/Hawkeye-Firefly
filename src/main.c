@@ -493,11 +493,13 @@ int main(int argc, char *argv[]) {
     // ── Gamepad (viewer UI actions only; QGC still owns flight control) ──
     input_gamepad_t gpad;
     input_gamepad_init(&gpad, 0);
-    bool show_gamepad_menu = true;  // Menu button toggles this overlay
+    bool show_gamepad_menu = true;  // View button (6) toggles this overlay
+    bool paused = false;            // Menu button (7) toggles; freezes lasers only
 
     // ── Lasers fired from the drone's legs (right trigger / X key) ──
     lasers_t lasers;
     lasers_init(&lasers);
+    float fire_cooldown = 0.0f;  // time until the next shot is allowed (seconds)
 
     // ── LAN multiplayer (peer discovery + position sharing) ──
     // Local vehicles occupy slots [0, local_count); network peers are placed in
@@ -1074,18 +1076,27 @@ int main(int argc, char *argv[]) {
         } // end !marker_input.active guard
 
         // ── Gamepad UI actions (QGC keeps flight control; these are viewer-only) ──
-        if (input_gamepad_pressed(&gpad, GP_ACTION_MENU)) {
+        // Menu button toggles pause (freezes lasers only); View button toggles
+        // the gamepad overlay.
+        if (input_gamepad_pressed(&gpad, GP_ACTION_PAUSE)) {
+            paused = !paused;
+        }
+        if (input_gamepad_pressed(&gpad, GP_ACTION_OVERLAY)) {
             show_gamepad_menu = !show_gamepad_menu;
         }
-        // Right trigger (or X key for keyboard testing) fires the leg lasers
-        // from the drone currently in focus. (F is taken by the terrain toggle.)
-        if (input_gamepad_pressed(&gpad, GP_ACTION_SHOOT) || IsKeyPressed(KEY_X)) {
+        // Right trigger (or X key for keyboard testing) fires the leg lasers from
+        // the drone in focus. Holding fires continuously, one volley every
+        // LASER_FIRE_INTERVAL_S. Suppressed while paused. (F = terrain toggle.)
+        if (fire_cooldown > 0.0f) fire_cooldown -= GetFrameTime();
+        bool fire_held = input_gamepad_down(&gpad, GP_ACTION_SHOOT) || IsKeyDown(KEY_X);
+        if (!paused && fire_held && fire_cooldown <= 0.0f) {
             const vehicle_t *shooter = &vehicles[selected];
             if (shooter->active) {
                 lasers_fire_from(&lasers, shooter->position,
                                  shooter->heading_deg, shooter->pitch_deg,
                                  shooter->model_scale);
             }
+            fire_cooldown += LASER_FIRE_INTERVAL_S;
         }
 
         // Marker label text input — consumes all keyboard while active
@@ -1302,8 +1313,9 @@ int main(int argc, char *argv[]) {
             }
         }
 
-        // Advance lasers (ground plane at y=0).
-        lasers_update(&lasers, GetFrameTime(), 0.0f);
+        // Advance lasers (ground plane at y=0). Frozen while paused — pause only
+        // affects the lasers; camera and everything else keep running.
+        if (!paused) lasers_update(&lasers, GetFrameTime(), 0.0f);
 
         // Update debug panel
         debug_panel_update(&dbg_panel, GetFrameTime());
@@ -1563,9 +1575,22 @@ int main(int argc, char *argv[]) {
                                   scene.theme, GetScreenWidth(), GetScreenHeight());
             }
 
-            // Gamepad state overlay (toggle with the Menu button)
+            // Gamepad state overlay (toggle with the View button)
             if (show_gamepad_menu) {
                 input_gamepad_draw_debug(&gpad, GetScreenWidth(), GetScreenHeight());
+            }
+
+            // PAUSED label, upper-center.
+            if (paused) {
+                const char *ptxt = "PAUSED";
+                float pfs = 40.0f;
+                Vector2 psz = MeasureTextEx(hud.font_value, ptxt, pfs, 2.0f);
+                float px = (GetScreenWidth() - psz.x) * 0.5f;
+                float py = 24.0f;
+                DrawTextEx(hud.font_value, ptxt, (Vector2){ px + 2, py + 2 }, pfs, 2.0f,
+                           (Color){ 0, 0, 0, 180 });  // shadow
+                DrawTextEx(hud.font_value, ptxt, (Vector2){ px, py }, pfs, 2.0f,
+                           (Color){ 255, 90, 80, 255 });
             }
 
         EndDrawing();
