@@ -21,7 +21,7 @@
 #define LASER_LENGTH_M    2.0f     // pill core length
 #define LASER_RADIUS_M    0.10f    // pill radius (collision + visual)
 #define LASER_FIRE_INTERVAL_S 0.20f  // gap between shots while the trigger is held
-#define LASER_HIT_RADIUS_M 1.5f    // proximity to a drone that counts as a hit
+#define LASER_HIT_RADIUS_M 0.5f    // proximity to a drone that counts as a hit
 
 // One fired laser's spawn parameters (origin + unit direction), used to forward
 // a shot to peers over the network.

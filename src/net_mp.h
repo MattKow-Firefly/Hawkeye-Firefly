@@ -40,6 +40,10 @@ typedef struct {
     hil_state_t state;        // latest position/attitude/velocity
     double      last_seen;    // timestamp from the caller's clock (seconds)
     char        name[MP_NAME_LEN];
+    // Peer's source address (sockaddr_in bytes), learned from received packets,
+    // used to unicast to this peer instead of broadcasting.
+    uint8_t     addr[16];
+    bool        addr_valid;
     // Receive-rate tracking (packets/sec, averaged over a ~1s window).
     float       rx_hz;
     int         rx_count;
@@ -55,8 +59,9 @@ typedef struct {
     int32_t     self_score;    // our score (set via mp_set_local, broadcast to peers)
     int32_t     self_health;   // our health (set via mp_set_local, broadcast to peers)
     char        self_name[MP_NAME_LEN];
-    hil_state_t local_state;   // our drone's latest state (broadcast to peers)
-    double      last_send;     // timestamp of last outgoing broadcast
+    hil_state_t local_state;   // our drone's latest state (sent to peers)
+    double      last_send;     // timestamp of last high-rate unicast to peers
+    double      last_beacon;   // timestamp of last low-rate discovery broadcast
     // Send-rate tracking (packets/sec, averaged over a ~1s window).
     float       tx_hz;
     int         tx_count;

@@ -27,8 +27,8 @@
 #define MP_MSG_LOST       5            // "I lost" (sender reached 0 health)
 // Adaptive broadcast rate: a slow discovery beacon when no peers are present,
 // ramping to full rate (frame-capped, ~60 Hz) once someone else is online.
-#define MP_IDLE_INTERVAL   1.0          // ~1 Hz beacon when alone
-#define MP_ACTIVE_INTERVAL (1.0/120.0)  // up to ~60 Hz (capped by frame rate) with peers
+#define MP_BEACON_INTERVAL 1.0          // ~1 Hz discovery broadcast (always)
+#define MP_ACTIVE_INTERVAL (1.0/120.0)  // up to ~60 Hz unicast to peers (frame-capped)
 #define MP_PEER_TIMEOUT    3.0          // drop peers silent this long
 
 // Wire packet — fixed layout, sent raw. Mirrors the hil_state_t fields the
@@ -153,40 +153,58 @@ void mp_set_local(mp_t *mp, const hil_state_t *state, uint8_t sysid,
     mp->self_health = health;
 }
 
-static void mp_broadcast(mp_t *mp) {
-    mp_packet_t pkt;
-    memset(&pkt, 0, sizeof(pkt));
-    pkt.magic      = MP_MAGIC;
-    pkt.version    = MP_VERSION;
-    pkt.type       = MP_MSG_STATE;
-    pkt.session_id = mp->session_id;
-    pkt.sysid      = mp->self_sysid;
-    pkt.mav_type   = mp->self_mav_type;
-    pkt.valid      = mp->local_state.valid ? 1 : 0;
-    memcpy(pkt.name, mp->self_name, MP_NAME_LEN);
+// Fill our current drone state/score/health into a STATE packet.
+static void mp_fill_state(mp_t *mp, mp_packet_t *pkt) {
+    memset(pkt, 0, sizeof(*pkt));
+    pkt->magic      = MP_MAGIC;
+    pkt->version    = MP_VERSION;
+    pkt->type       = MP_MSG_STATE;
+    pkt->session_id = mp->session_id;
+    pkt->sysid      = mp->self_sysid;
+    pkt->mav_type   = mp->self_mav_type;
+    pkt->valid      = mp->local_state.valid ? 1 : 0;
+    memcpy(pkt->name, mp->self_name, MP_NAME_LEN);
 
-    pkt.lat           = mp->local_state.lat;
-    pkt.lon           = mp->local_state.lon;
-    pkt.alt           = mp->local_state.alt;
-    memcpy(pkt.quat, mp->local_state.quaternion, sizeof(pkt.quat));
-    pkt.vx            = mp->local_state.vx;
-    pkt.vy            = mp->local_state.vy;
-    pkt.vz            = mp->local_state.vz;
-    pkt.ind_airspeed  = mp->local_state.ind_airspeed;
-    pkt.true_airspeed = mp->local_state.true_airspeed;
-    pkt.time_usec     = mp->local_state.time_usec;
-    pkt.score         = mp->self_score;
-    pkt.health        = mp->self_health;
+    pkt->lat           = mp->local_state.lat;
+    pkt->lon           = mp->local_state.lon;
+    pkt->alt           = mp->local_state.alt;
+    memcpy(pkt->quat, mp->local_state.quaternion, sizeof(pkt->quat));
+    pkt->vx            = mp->local_state.vx;
+    pkt->vy            = mp->local_state.vy;
+    pkt->vz            = mp->local_state.vz;
+    pkt->ind_airspeed  = mp->local_state.ind_airspeed;
+    pkt->true_airspeed = mp->local_state.true_airspeed;
+    pkt->time_usec     = mp->local_state.time_usec;
+    pkt->score         = mp->self_score;
+    pkt->health        = mp->self_health;
+}
 
+// Send a packet to the subnet broadcast address (discovery / fallback).
+static void mp_send_broadcast(mp_t *mp, const mp_packet_t *pkt) {
     struct sockaddr_in dst;
     memset(&dst, 0, sizeof(dst));
     dst.sin_family      = AF_INET;
     dst.sin_port        = htons(mp->port);
     dst.sin_addr.s_addr = htonl(INADDR_BROADCAST);  // 255.255.255.255
-
-    sendto(mp->sock, (const char *)&pkt, sizeof(pkt), 0,
+    sendto(mp->sock, (const char *)pkt, sizeof(*pkt), 0,
            (struct sockaddr *)&dst, sizeof(dst));
-    mp->tx_count++;
+}
+
+// Unicast a packet to every peer whose address we know. On Wi-Fi, unicast
+// frames get 802.11 link-layer ACK + retransmit, so this is far more reliable
+// than broadcast on a weak connection. Returns the number of peers sent to.
+static int mp_send_peers(mp_t *mp, const mp_packet_t *pkt) {
+    int sent = 0;
+    for (int i = 0; i < MP_MAX_PEERS; i++) {
+        mp_peer_t *pe = &mp->peers[i];
+        if (!pe->used || !pe->addr_valid) continue;
+        struct sockaddr_in dst;
+        memcpy(&dst, pe->addr, sizeof(dst));  // copy out (alignment-safe)
+        sendto(mp->sock, (const char *)pkt, sizeof(*pkt), 0,
+               (struct sockaddr *)&dst, sizeof(dst));
+        sent++;
+    }
+    return sent;
 }
 
 // Find the peer slot for a session id, or claim a free one. Returns NULL if full.
@@ -253,6 +271,10 @@ static void mp_recv(mp_t *mp, double now) {
         pe->name[MP_NAME_LEN - 1] = '\0';
         pe->last_seen = now;
 
+        // Learn this peer's address so we can unicast to them.
+        memcpy(pe->addr, &src, sizeof(struct sockaddr_in));
+        pe->addr_valid = true;
+
         pe->state.lat = pkt.lat;
         pe->state.lon = pkt.lon;
         pe->state.alt = pkt.alt;
@@ -316,15 +338,28 @@ void mp_poll(mp_t *mp, double now) {
         mp->tx_t0 = now;
     }
 
-    // Slow beacon when alone; full rate once at least one peer is present.
-    double interval = (peers > 0) ? MP_ACTIVE_INTERVAL : MP_IDLE_INTERVAL;
-    if (now - mp->last_send >= interval) {
-        mp_broadcast(mp);
+    // Low-rate discovery beacon (broadcast) so newly-joined peers can find us,
+    // even once we're already unicasting to others.
+    if (now - mp->last_beacon >= MP_BEACON_INTERVAL) {
+        mp_packet_t pkt;
+        mp_fill_state(mp, &pkt);
+        mp_send_broadcast(mp, &pkt);
+        mp->last_beacon = now;
+        if (peers == 0) mp->tx_count++;   // when alone, the beacon is our send rate
+    }
+
+    // High-rate state to each known peer via unicast (one copy per peer).
+    if (peers > 0 && now - mp->last_send >= MP_ACTIVE_INTERVAL) {
+        mp_packet_t pkt;
+        mp_fill_state(mp, &pkt);
+        mp_send_peers(mp, &pkt);
+        mp->tx_count++;                   // count per update tick, not per peer
         mp->last_send = now;
     }
 }
 
-// Fill a packet header and broadcast it (used by the event senders below).
+// Build an event packet and unicast it to every known peer. Falls back to
+// broadcast if we don't have any peer addresses yet.
 static void mp_send_event(mp_t *mp, uint16_t type,
                           const float origin[3], const float dir[3],
                           uint32_t target_session) {
@@ -339,13 +374,7 @@ static void mp_send_event(mp_t *mp, uint16_t type,
     if (origin) memcpy(pkt.fire_origin, origin, sizeof(pkt.fire_origin));
     if (dir)    memcpy(pkt.fire_dir, dir, sizeof(pkt.fire_dir));
 
-    struct sockaddr_in dst;
-    memset(&dst, 0, sizeof(dst));
-    dst.sin_family      = AF_INET;
-    dst.sin_port        = htons(mp->port);
-    dst.sin_addr.s_addr = htonl(INADDR_BROADCAST);
-    sendto(mp->sock, (const char *)&pkt, sizeof(pkt), 0,
-           (struct sockaddr *)&dst, sizeof(dst));
+    if (mp_send_peers(mp, &pkt) == 0) mp_send_broadcast(mp, &pkt);
 }
 
 void mp_send_laser(mp_t *mp, const float origin[3], const float dir[3]) {
