@@ -43,8 +43,9 @@ void lasers_spawn(lasers_t *L, Vector3 origin, Vector3 dir) {
     // Pool full: silently drop (rare at these limits).
 }
 
-void lasers_fire_from(lasers_t *L, Vector3 body_pos,
-                      float heading_deg, float pitch_deg, float scale) {
+int lasers_fire_from(lasers_t *L, Vector3 body_pos,
+                     float heading_deg, float pitch_deg, float scale,
+                     laser_shot_t *out, int max_out) {
     float h = heading_deg * DEG2RAD;
     float p = pitch_deg * DEG2RAD;
 
@@ -75,6 +76,12 @@ void lasers_fire_from(lasers_t *L, Vector3 body_pos,
 
     lasers_spawn(L, leg_l, fwd);
     lasers_spawn(L, leg_r, fwd);
+
+    // Report the shots so the caller can forward them to peers.
+    int n = 0;
+    if (out && max_out > 0) { out[n].origin = leg_l; out[n].dir = fwd; n++; }
+    if (out && max_out > 1) { out[n].origin = leg_r; out[n].dir = fwd; n++; }
+    return n;
 }
 
 void lasers_update(lasers_t *L, float dt, float ground_y) {
@@ -93,25 +100,43 @@ void lasers_update(lasers_t *L, float dt, float ground_y) {
             continue;
         }
 
-        // TODO: object collision goes here — test l->bbox / capsule (l->cap_a,
-        // l->cap_b, l->radius) against the dynamic target set once it exists.
     }
 }
 
-void lasers_draw(const lasers_t *L) {
-    const Color core  = (Color){ 255, 60, 50, 255 };
-    const Color glow  = (Color){ 255, 90, 80, 90 };
+// Squared distance from point p to segment ab.
+static float point_seg_dist2(Vector3 p, Vector3 a, Vector3 b) {
+    Vector3 ab = Vector3Subtract(b, a);
+    Vector3 ap = Vector3Subtract(p, a);
+    float denom = Vector3DotProduct(ab, ab);
+    float t = (denom > 1e-9f) ? Vector3DotProduct(ap, ab) / denom : 0.0f;
+    if (t < 0.0f) t = 0.0f; else if (t > 1.0f) t = 1.0f;
+    Vector3 closest = Vector3Add(a, Vector3Scale(ab, t));
+    Vector3 d = Vector3Subtract(p, closest);
+    return Vector3DotProduct(d, d);
+}
 
+bool lasers_take_hit(lasers_t *L, Vector3 center, float radius) {
+    float r = radius + LASER_RADIUS_M;
+    float r2 = r * r;
+    for (int i = 0; i < LASERS_MAX; i++) {
+        laser_t *l = &L->items[i];
+        if (!l->active) continue;
+        if (point_seg_dist2(center, l->cap_a, l->cap_b) <= r2) {
+            l->active = false;  // consume the laser on impact
+            return true;
+        }
+    }
+    return false;
+}
+
+void lasers_draw(const lasers_t *L, Color color) {
     for (int i = 0; i < LASERS_MAX; i++) {
         const laser_t *l = &L->items[i];
         if (!l->active) continue;
 
-        // Translucent outer shell for a bit of glow, solid bright core, rounded
-        // caps to complete the pill.
-        // Nah, disable that, only show the actual laser beam
-        //DrawCylinderEx(l->cap_a, l->cap_b, l->radius * 1.5f, l->radius * 1.5f, 8, glow);
-        DrawCylinderEx(l->cap_a, l->cap_b, l->radius, l->radius, 10, core);
-        DrawSphere(l->cap_a, l->radius, core);
-        DrawSphere(l->cap_b, l->radius, core);
+        // Solid bright core with rounded caps (the beam itself).
+        DrawCylinderEx(l->cap_a, l->cap_b, l->radius, l->radius, 10, color);
+        DrawSphere(l->cap_a, l->radius, color);
+        DrawSphere(l->cap_b, l->radius, color);
     }
 }

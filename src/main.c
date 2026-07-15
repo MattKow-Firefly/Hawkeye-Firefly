@@ -48,7 +48,8 @@ static const data_source_ops_t MP_SRC_OPS = { mp_src_poll, NULL, NULL, mp_src_cl
 
 // Left-side multiplayer info overlay: local player (name/score/send rate) and
 // each peer (name/score/receive rate over the last ~1s). Toggled with 'M'.
-static void draw_mp_debug(const mp_t *mp, const char *local_name, int local_score) {
+static void draw_mp_debug(const mp_t *mp, const char *local_name,
+                          int local_score, int local_health) {
     int npeers = 0;
     for (int i = 0; i < MP_MAX_PEERS; i++) if (mp->peers[i].used) npeers++;
 
@@ -62,7 +63,7 @@ static void draw_mp_debug(const mp_t *mp, const char *local_name, int local_scor
 
     DrawText(TextFormat("you: %s", local_name),
              cx, cy, 13, (Color){ 130, 200, 255, 255 }); cy += 18;
-    DrawText(TextFormat("  score %d    tx %.0f Hz", local_score, mp->tx_hz),
+    DrawText(TextFormat("  hp %d  score %d  tx %.0f", local_health, local_score, mp->tx_hz),
              cx, cy, 13, (Color){ 180, 180, 195, 255 }); cy += 24;
 
     DrawText(TextFormat("peers: %d", npeers), cx, cy, 13, (Color){ 235, 200, 120, 255 });
@@ -73,7 +74,7 @@ static void draw_mp_debug(const mp_t *mp, const char *local_name, int local_scor
         if (!pe->used) continue;
         DrawText(TextFormat("- %s", pe->name[0] ? pe->name : "?"),
                  cx, cy, 13, (Color){ 150, 220, 150, 255 }); cy += 16;
-        DrawText(TextFormat("    score %d   rx %.1f Hz", pe->score, pe->rx_hz),
+        DrawText(TextFormat("    hp %d  score %d  rx %.0f", pe->health, pe->score, pe->rx_hz),
                  cx, cy, 13, (Color){ 180, 180, 195, 255 }); cy += 18;
     }
 }
@@ -534,8 +535,10 @@ int main(int argc, char *argv[]) {
     bool paused = false;            // Menu button (7) toggles; freezes lasers only
 
     // ── Lasers fired from the drone's legs (right trigger / X key) ──
-    lasers_t lasers;
+    lasers_t lasers;         // our own shots (drawn red; we run hit detection on these)
     lasers_init(&lasers);
+    lasers_t mp_lasers;      // peers' shots received over the network (drawn red-purple)
+    lasers_init(&mp_lasers);
     float fire_cooldown = 0.0f;  // time until the next shot is allowed (seconds)
 
     // ── LAN multiplayer (peer discovery + position sharing) ──
@@ -556,7 +559,14 @@ int main(int argc, char *argv[]) {
         }
     }
     int mp_score = 0;                    // local player's score (broadcast to peers)
+    int mp_health = 100;                 // local player's health
     bool show_mp_debug = mp_active;      // MP info overlay; on by default in mp mode, 'M' toggles
+
+    // Combat feedback: brief screen tints, and a 10s win/lose end state.
+    float tint_green_t = 0.0f;           // we landed a hit (split-second green)
+    float tint_red_t   = 0.0f;           // we took a hit (split-second red)
+    int   game_result  = 0;              // 0 = playing, 1 = won, 2 = lost
+    float game_over_t  = 0.0f;           // seconds remaining on the win/lose banner
 
     // Main loop
     while (!WindowShouldClose()) {
@@ -643,7 +653,8 @@ int main(int argc, char *argv[]) {
         // next frame's vehicle_update (peer sources use MP_SRC_OPS, whose poll is
         // a no-op, so the state we write here survives until then).
         if (mp_active) {
-            mp_set_local(&mp, &sources[0].state, sources[0].sysid, sources[0].mav_type, mp_score);
+            mp_set_local(&mp, &sources[0].state, sources[0].sysid, sources[0].mav_type,
+                         mp_score, mp_health);
             mp_poll(&mp, GetTime());
 
             for (int p = 0; p < MP_MAX_PEERS; p++) {
@@ -697,6 +708,47 @@ int main(int argc, char *argv[]) {
                 if (!present) {
                     sources[s].connected = false;
                     vehicles[s].active = false;
+                }
+            }
+
+            // ── Combat ──
+            // Spawn peers' received shots into the visual-only mp_lasers array.
+            for (int e = 0; e < mp.rx_fire_count; e++) {
+                Vector3 o = { mp.rx_fires[e].origin[0], mp.rx_fires[e].origin[1],
+                              mp.rx_fires[e].origin[2] };
+                Vector3 d = { mp.rx_fires[e].dir[0], mp.rx_fires[e].dir[1],
+                              mp.rx_fires[e].dir[2] };
+                lasers_spawn(&mp_lasers, o, d);
+            }
+
+            if (game_over_t <= 0.0f) {
+                // Damage we took this poll: -10 health each, brief red flash.
+                for (int hi = 0; hi < mp.rx_hits; hi++) {
+                    mp_health -= 10;
+                    tint_red_t = 0.18f;
+                }
+                if (mp.rx_hits > 0 && mp_health <= 0) {
+                    mp_health = 0;
+                    game_result = 2;          // we lost
+                    game_over_t = 10.0f;
+                    mp_send_lost(&mp);
+                } else if (mp.rx_lost) {
+                    game_result = 1;          // a peer lost -> we won
+                    game_over_t = 10.0f;
+                }
+
+                // Client-side hit detection: our lasers vs each peer's current
+                // network position. Each hit scores +10 and notifies that peer.
+                if (game_over_t <= 0.0f) {
+                    for (int s = local_count; s < vehicle_count; s++) {
+                        if (!sources[s].connected || !vehicles[s].active) continue;
+                        while (lasers_take_hit(&lasers, vehicles[s].position,
+                                               LASER_HIT_RADIUS_M)) {
+                            mp_score += 10;
+                            tint_green_t = 0.18f;
+                            mp_send_hit(&mp, peer_slot_session[s]);
+                        }
+                    }
                 }
             }
         }
@@ -1133,12 +1185,21 @@ int main(int argc, char *argv[]) {
         // LASER_FIRE_INTERVAL_S. Suppressed while paused. (F = terrain toggle.)
         if (fire_cooldown > 0.0f) fire_cooldown -= GetFrameTime();
         bool fire_held = input_gamepad_down(&gpad, GP_ACTION_SHOOT) || IsKeyDown(KEY_X);
-        if (!paused && fire_held && fire_cooldown <= 0.0f) {
+        if (!paused && game_over_t <= 0.0f && fire_held && fire_cooldown <= 0.0f) {
             const vehicle_t *shooter = &vehicles[selected];
             if (shooter->active) {
-                lasers_fire_from(&lasers, shooter->position,
-                                 shooter->heading_deg, shooter->pitch_deg,
-                                 shooter->model_scale);
+                laser_shot_t shots[2];
+                int nshots = lasers_fire_from(&lasers, shooter->position,
+                                              shooter->heading_deg, shooter->pitch_deg,
+                                              shooter->model_scale, shots, 2);
+                // Forward each shot to peers so they can render it.
+                if (mp_active) {
+                    for (int s = 0; s < nshots; s++) {
+                        float o[3] = { shots[s].origin.x, shots[s].origin.y, shots[s].origin.z };
+                        float d[3] = { shots[s].dir.x,    shots[s].dir.y,    shots[s].dir.z };
+                        mp_send_laser(&mp, o, d);
+                    }
+                }
             }
             fire_cooldown += LASER_FIRE_INTERVAL_S;
         }
@@ -1359,7 +1420,26 @@ int main(int argc, char *argv[]) {
 
         // Advance lasers (ground plane at y=0). Frozen while paused — pause only
         // affects the lasers; camera and everything else keep running.
-        if (!paused) lasers_update(&lasers, GetFrameTime(), 0.0f);
+        if (!paused) {
+            lasers_update(&lasers, GetFrameTime(), 0.0f);
+            lasers_update(&mp_lasers, GetFrameTime(), 0.0f);
+        }
+
+        // Combat feedback timers: split-second tints and the 10s win/lose banner.
+        {
+            float dt_fb = GetFrameTime();
+            if (tint_green_t > 0.0f) tint_green_t -= dt_fb;
+            if (tint_red_t   > 0.0f) tint_red_t   -= dt_fb;
+            if (game_over_t  > 0.0f) {
+                game_over_t -= dt_fb;
+                if (game_over_t <= 0.0f) {   // banner done: reset the match
+                    game_over_t = 0.0f;
+                    game_result = 0;
+                    mp_health = 100;
+                    mp_score = 0;
+                }
+            }
+        }
 
         // Update debug panel
         debug_panel_update(&dbg_panel, GetFrameTime());
@@ -1401,8 +1481,9 @@ int main(int argc, char *argv[]) {
                     }
                 }
 
-                // Lasers (world-space projectiles)
-                lasers_draw(&lasers);
+                // Lasers: our own in red, peers' received shots in red-purple.
+                lasers_draw(&lasers, (Color){ 255, 60, 50, 255 });
+                lasers_draw(&mp_lasers, (Color){ 225, 70, 170, 255 });
                 // Draw frame marker spheres and system marker cubes for all drones
                 for (int i = 0; i < vehicle_count; i++) {
                     if (is_replay && markers[i].count > 0) {
@@ -1626,7 +1707,7 @@ int main(int argc, char *argv[]) {
 
             // Multiplayer info overlay, left side (toggle with 'M').
             if (mp_active && show_mp_debug) {
-                draw_mp_debug(&mp, mp.self_name, mp_score);
+                draw_mp_debug(&mp, mp.self_name, mp_score, mp_health);
             }
 
             // PAUSED label, upper-center.
@@ -1640,6 +1721,54 @@ int main(int argc, char *argv[]) {
                            (Color){ 0, 0, 0, 180 });  // shadow
                 DrawTextEx(hud.font_value, ptxt, (Vector2){ px, py }, pfs, 2.0f,
                            (Color){ 255, 90, 80, 255 });
+            }
+
+            // ── Multiplayer combat HUD ──
+            if (mp_active) {
+                // Health bar, top-middle.
+                int bw = 240, bh = 16;
+                int bx = (GetScreenWidth() - bw) / 2, by = 12;
+                float frac = mp_health / 100.0f;
+                if (frac < 0.0f) frac = 0.0f;
+                Color hc = (frac > 0.5f) ? (Color){ 80, 200, 90, 255 }
+                         : (frac > 0.25f) ? (Color){ 220, 200, 60, 255 }
+                         : (Color){ 220, 70, 60, 255 };
+                DrawRectangle(bx - 2, by - 2, bw + 4, bh + 4, (Color){ 0, 0, 0, 150 });
+                DrawRectangle(bx, by, (int)(bw * frac), bh, hc);
+                DrawRectangleLines(bx, by, bw, bh, (Color){ 200, 200, 210, 200 });
+                const char *ht = TextFormat("HP %d", mp_health);
+                Vector2 hts = MeasureTextEx(hud.font_label, ht, 15, 1.0f);
+                DrawTextEx(hud.font_label, ht,
+                           (Vector2){ bx + bw / 2.0f - hts.x / 2.0f, by + 0.5f },
+                           15, 1.0f, (Color){ 255, 255, 255, 255 });
+            }
+
+            // Split-second hit flashes (green = we hit, red = we got hit).
+            if (tint_green_t > 0.0f) {
+                unsigned char a = (unsigned char)(110.0f * (tint_green_t / 0.18f));
+                DrawRectangle(0, 0, GetScreenWidth(), GetScreenHeight(),
+                              (Color){ 40, 220, 90, a });
+            }
+            if (tint_red_t > 0.0f) {
+                unsigned char a = (unsigned char)(110.0f * (tint_red_t / 0.18f));
+                DrawRectangle(0, 0, GetScreenWidth(), GetScreenHeight(),
+                              (Color){ 220, 50, 40, a });
+            }
+
+            // Win/lose banner: colored tint + centered text for 10s.
+            if (game_over_t > 0.0f) {
+                bool won = (game_result == 1);
+                Color tc = won ? (Color){ 30, 180, 70, 110 } : (Color){ 190, 40, 40, 120 };
+                DrawRectangle(0, 0, GetScreenWidth(), GetScreenHeight(), tc);
+                const char *msg = won ? "You Won" : "You Lost";
+                float fs = 72.0f;
+                Vector2 ms = MeasureTextEx(hud.font_value, msg, fs, 2.0f);
+                float mx = (GetScreenWidth() - ms.x) * 0.5f;
+                float my = (GetScreenHeight() - ms.y) * 0.5f;
+                DrawTextEx(hud.font_value, msg, (Vector2){ mx + 3, my + 3 }, fs, 2.0f,
+                           (Color){ 0, 0, 0, 180 });
+                DrawTextEx(hud.font_value, msg, (Vector2){ mx, my }, fs, 2.0f,
+                           (Color){ 255, 255, 255, 255 });
             }
 
         EndDrawing();
