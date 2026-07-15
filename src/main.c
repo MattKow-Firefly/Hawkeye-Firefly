@@ -237,13 +237,14 @@ int main(int argc, char *argv[]) {
     memset(sources, 0, sizeof(sources));
     bool is_replay = (num_replay_files > 0);
 
-    // Multiplayer requires a live (non-replay) session and a fixed shared NED
-    // origin so every peer places remote drones in the same world frame.
+    // Multiplayer requires a live (non-replay) session. The shared NED origin is
+    // taken from the local drone's own resolved origin (see the mp block in the
+    // main loop) rather than a hardcoded guess — a wrong guess would place the
+    // local drone thousands of km away once real telemetry arrives.
     if (mp_enabled && is_replay) {
         fprintf(stderr, "-mp ignored during ULog replay\n");
         mp_enabled = false;
     }
-    if (mp_enabled) origin_specified = true;
 
     if (is_replay) {
         for (int i = 0; i < num_replay_files; i++) {
@@ -510,9 +511,6 @@ int main(int argc, char *argv[]) {
     int local_count = vehicle_count;
     uint32_t peer_slot_session[MAX_VEHICLES];
     memset(peer_slot_session, 0, sizeof(peer_slot_session));
-    double mp_lat0 = origin_lat * (M_PI / 180.0);
-    double mp_lon0 = origin_lon * (M_PI / 180.0);
-    double mp_alt0 = origin_alt;
     if (mp_enabled) {
         if (mp_init(&mp, mp_port, sources[0].sysid, NULL) == 0) {
             mp_active = true;
@@ -625,13 +623,19 @@ int main(int argc, char *argv[]) {
                     peer_slot_session[slot] = pe->session_id;
                     vehicle_init(&vehicles[slot], model_idx, scene.lighting_shader);
                     vehicles[slot].color = scene.theme->drone_palette[slot % 16];
-                    vehicles[slot].lat0 = mp_lat0;
-                    vehicles[slot].lon0 = mp_lon0;
-                    vehicles[slot].alt0 = mp_alt0;
-                    vehicles[slot].origin_set = true;
                     sources[slot].ops = &MP_SRC_OPS;
                     if (slot + 1 > vehicle_count) vehicle_count = slot + 1;
                 }
+
+                // Place peers in the local drone's world frame: mirror its
+                // resolved NED origin so a peer's raw lat/lon renders at the
+                // correct position relative to us. Both drones sharing the same
+                // real origin (default SIH home) yields correct formation; if
+                // their homes differ, peers show at the true geographic offset.
+                vehicles[slot].lat0 = vehicles[0].lat0;
+                vehicles[slot].lon0 = vehicles[0].lon0;
+                vehicles[slot].alt0 = vehicles[0].alt0;
+                vehicles[slot].origin_set = vehicles[0].origin_set;
 
                 // Feed the peer's latest state into its source for vehicle_update.
                 sources[slot].state = pe->state;
