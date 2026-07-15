@@ -1,6 +1,7 @@
 #include "net_mp.h"
 
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 #include <time.h>
 
@@ -11,6 +12,7 @@
 #else
 #include <unistd.h>
 #include <fcntl.h>
+#include <pwd.h>
 #include <sys/socket.h>
 #include <netinet/in.h>
 #include <arpa/inet.h>
@@ -18,7 +20,7 @@
 #endif
 
 #define MP_MAGIC          0x484B4D50u  // 'H''K''M''P'
-#define MP_VERSION        1
+#define MP_VERSION        2            // bumped: packet now carries score
 #define MP_MSG_STATE      2
 // Adaptive broadcast rate: a slow discovery beacon when no peers are present,
 // ramping to full rate (frame-capped, ~60 Hz) once someone else is online.
@@ -47,6 +49,7 @@ typedef struct {
     uint16_t ind_airspeed; // cm/s
     uint16_t true_airspeed;// cm/s
     uint64_t time_usec;
+    int32_t  score;
 } mp_packet_t;
 #pragma pack(pop)
 
@@ -70,6 +73,22 @@ static uint32_t make_session_id(void) {
 #endif
 }
 
+// The current user's login name, for use as the default player name.
+static const char *login_name(void) {
+    const char *n;
+#ifdef _WIN32
+    n = getenv("USERNAME");
+#else
+    n = getenv("USER");
+    if (!n || !n[0]) n = getenv("LOGNAME");
+    if (!n || !n[0]) {
+        struct passwd *pw = getpwuid(getuid());
+        if (pw) n = pw->pw_name;
+    }
+#endif
+    return (n && n[0]) ? n : "hawkeye";
+}
+
 int mp_init(mp_t *mp, uint16_t port, uint8_t self_sysid, const char *name) {
     memset(mp, 0, sizeof(*mp));
     mp->port = port;
@@ -77,7 +96,7 @@ int mp_init(mp_t *mp, uint16_t port, uint8_t self_sysid, const char *name) {
     mp->session_id = make_session_id();
     mp->sock = SOCK_INVALID;
     snprintf(mp->self_name, sizeof(mp->self_name), "%s",
-             (name && name[0]) ? name : "hawkeye");
+             (name && name[0]) ? name : login_name());
 
 #ifdef _WIN32
     WSADATA wsa;
@@ -117,10 +136,12 @@ int mp_init(mp_t *mp, uint16_t port, uint8_t self_sysid, const char *name) {
     return 0;
 }
 
-void mp_set_local(mp_t *mp, const hil_state_t *state, uint8_t sysid, uint8_t mav_type) {
+void mp_set_local(mp_t *mp, const hil_state_t *state, uint8_t sysid,
+                  uint8_t mav_type, int32_t score) {
     mp->local_state = *state;
     if (sysid) mp->self_sysid = sysid;
     mp->self_mav_type = mav_type;
+    mp->self_score = score;
 }
 
 static void mp_broadcast(mp_t *mp) {
@@ -145,6 +166,7 @@ static void mp_broadcast(mp_t *mp) {
     pkt.ind_airspeed  = mp->local_state.ind_airspeed;
     pkt.true_airspeed = mp->local_state.true_airspeed;
     pkt.time_usec     = mp->local_state.time_usec;
+    pkt.score         = mp->self_score;
 
     struct sockaddr_in dst;
     memset(&dst, 0, sizeof(dst));
@@ -154,6 +176,7 @@ static void mp_broadcast(mp_t *mp) {
 
     sendto(mp->sock, (const char *)&pkt, sizeof(pkt), 0,
            (struct sockaddr *)&dst, sizeof(dst));
+    mp->tx_count++;
 }
 
 // Find the peer slot for a session id, or claim a free one. Returns NULL if full.
@@ -207,6 +230,11 @@ static void mp_recv(mp_t *mp, double now) {
         pe->state.true_airspeed = pkt.true_airspeed;
         pe->state.time_usec     = pkt.time_usec;
         pe->state.valid         = pkt.valid ? true : false;
+        pe->score               = pkt.score;
+
+        // Receive-rate accounting.
+        if (pe->rx_t0 == 0.0) pe->rx_t0 = now;
+        pe->rx_count++;
 
         if (is_new)
             printf("[mp] peer joined: %s (sysid %u, session %08x)\n",
@@ -230,7 +258,22 @@ void mp_poll(mp_t *mp, double now) {
             mp->peers[i].used = false;
         } else {
             peers++;
+            // Refresh this peer's receive-rate once per ~1s window.
+            mp_peer_t *pe = &mp->peers[i];
+            if (pe->rx_t0 > 0.0 && now - pe->rx_t0 >= 1.0) {
+                pe->rx_hz = (float)(pe->rx_count / (now - pe->rx_t0));
+                pe->rx_count = 0;
+                pe->rx_t0 = now;
+            }
         }
+    }
+
+    // Refresh our send-rate once per ~1s window.
+    if (mp->tx_t0 == 0.0) mp->tx_t0 = now;
+    if (now - mp->tx_t0 >= 1.0) {
+        mp->tx_hz = (float)(mp->tx_count / (now - mp->tx_t0));
+        mp->tx_count = 0;
+        mp->tx_t0 = now;
     }
 
     // Slow beacon when alone; full rate once at least one peer is present.

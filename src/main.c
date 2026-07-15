@@ -46,6 +46,39 @@ static void mp_src_poll(data_source_t *ds, float dt) { (void)ds; (void)dt; }
 static void mp_src_close(data_source_t *ds) { (void)ds; }
 static const data_source_ops_t MP_SRC_OPS = { mp_src_poll, NULL, NULL, mp_src_close };
 
+// Left-side multiplayer info overlay: local player (name/score/send rate) and
+// each peer (name/score/receive rate over the last ~1s). Toggled with 'M'.
+static void draw_mp_debug(const mp_t *mp, const char *local_name, int local_score) {
+    int npeers = 0;
+    for (int i = 0; i < MP_MAX_PEERS; i++) if (mp->peers[i].used) npeers++;
+
+    const int w = 232, x = 12, y = 96;
+    const int h = 94 + npeers * 34;
+    DrawRectangle(x, y, w, h, (Color){ 0, 0, 0, 160 });
+    DrawRectangleLines(x, y, w, h, (Color){ 90, 90, 110, 200 });
+
+    int cx = x + 12, cy = y + 10;
+    DrawText("MULTIPLAYER", cx, cy, 16, (Color){ 255, 255, 255, 255 }); cy += 22;
+
+    DrawText(TextFormat("you: %.14s #%04x", local_name, mp->session_id & 0xFFFF),
+             cx, cy, 13, (Color){ 130, 200, 255, 255 }); cy += 18;
+    DrawText(TextFormat("  score %d    tx %.0f Hz", local_score, mp->tx_hz),
+             cx, cy, 13, (Color){ 180, 180, 195, 255 }); cy += 24;
+
+    DrawText(TextFormat("peers: %d", npeers), cx, cy, 13, (Color){ 235, 200, 120, 255 });
+    cy += 20;
+
+    for (int i = 0; i < MP_MAX_PEERS; i++) {
+        const mp_peer_t *pe = &mp->peers[i];
+        if (!pe->used) continue;
+        DrawText(TextFormat("- %.14s #%04x", pe->name[0] ? pe->name : "?",
+                            pe->session_id & 0xFFFF),
+                 cx, cy, 13, (Color){ 150, 220, 150, 255 }); cy += 16;
+        DrawText(TextFormat("    score %d   rx %.1f Hz", pe->score, pe->rx_hz),
+                 cx, cy, 13, (Color){ 180, 180, 195, 255 }); cy += 18;
+    }
+}
+
 static void print_usage(const char *prog) {
     printf("Usage: %s [options]\n", prog);
     printf("  -udp <port>    UDP base port (default: 19410)\n");
@@ -519,6 +552,8 @@ int main(int argc, char *argv[]) {
             fprintf(stderr, "Multiplayer init failed on port %u (running solo)\n", mp_port);
         }
     }
+    int mp_score = 0;                    // local player's score (broadcast to peers)
+    bool show_mp_debug = mp_active;      // MP info overlay; on by default in mp mode, 'M' toggles
 
     // Main loop
     while (!WindowShouldClose()) {
@@ -605,7 +640,7 @@ int main(int argc, char *argv[]) {
         // next frame's vehicle_update (peer sources use MP_SRC_OPS, whose poll is
         // a no-op, so the state we write here survives until then).
         if (mp_active) {
-            mp_set_local(&mp, &sources[0].state, sources[0].sysid, sources[0].mav_type);
+            mp_set_local(&mp, &sources[0].state, sources[0].sysid, sources[0].mav_type, mp_score);
             mp_poll(&mp, GetTime());
 
             for (int p = 0; p < MP_MAX_PEERS; p++) {
@@ -988,12 +1023,14 @@ int main(int argc, char *argv[]) {
             ortho.visible = !ortho.visible;
         }
 
-        // Cycle model for selected vehicle
-        // Cycle model: M = within group, Shift+M = all models
+        // M: in multiplayer, toggle the MP info overlay; otherwise cycle the
+        // selected vehicle's model. Shift+M always cycles through all models.
         if (IsKeyPressed(KEY_M)) {
             if (IsKeyDown(KEY_LEFT_SHIFT) || IsKeyDown(KEY_RIGHT_SHIFT)) {
                 int next = (vehicles[selected].model_idx + 1) % vehicle_model_count;
                 vehicle_load_model(&vehicles[selected], next);
+            } else if (mp_active) {
+                show_mp_debug = !show_mp_debug;
             } else {
                 vehicle_cycle_model(&vehicles[selected]);
             }
@@ -1582,6 +1619,11 @@ int main(int argc, char *argv[]) {
             // Gamepad state overlay (toggle with the View button)
             if (show_gamepad_menu) {
                 input_gamepad_draw_debug(&gpad, GetScreenWidth(), GetScreenHeight());
+            }
+
+            // Multiplayer info overlay, left side (toggle with 'M').
+            if (mp_active && show_mp_debug) {
+                draw_mp_debug(&mp, mp.self_name, mp_score);
             }
 
             // PAUSED label, upper-center.
