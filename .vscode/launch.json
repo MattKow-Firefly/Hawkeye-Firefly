@@ -37,10 +37,13 @@
           "1",
           "-mc",
           "-mp"
+          // Add -name "Pilot" for custom name in multiplayer
+          //,"-name", "Pilot"
       ],
       "stopAtEntry": false,
       // -mp: broadcast this drone's position and show LAN peers. Start PX4 SITL
       // first. Peers on the same Wi-Fi are discovered automatically.
+      // -name: player name shown in the MP overlay (defaults to login name).
       "cwd": "${workspaceFolder}/build",
       "environment": [],
       "externalConsole": false,

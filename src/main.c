@@ -60,7 +60,7 @@ static void draw_mp_debug(const mp_t *mp, const char *local_name, int local_scor
     int cx = x + 12, cy = y + 10;
     DrawText("MULTIPLAYER", cx, cy, 16, (Color){ 255, 255, 255, 255 }); cy += 22;
 
-    DrawText(TextFormat("you: %.14s #%04x", local_name, mp->session_id & 0xFFFF),
+    DrawText(TextFormat("you: %s", local_name),
              cx, cy, 13, (Color){ 130, 200, 255, 255 }); cy += 18;
     DrawText(TextFormat("  score %d    tx %.0f Hz", local_score, mp->tx_hz),
              cx, cy, 13, (Color){ 180, 180, 195, 255 }); cy += 24;
@@ -71,8 +71,7 @@ static void draw_mp_debug(const mp_t *mp, const char *local_name, int local_scor
     for (int i = 0; i < MP_MAX_PEERS; i++) {
         const mp_peer_t *pe = &mp->peers[i];
         if (!pe->used) continue;
-        DrawText(TextFormat("- %.14s #%04x", pe->name[0] ? pe->name : "?",
-                            pe->session_id & 0xFFFF),
+        DrawText(TextFormat("- %s", pe->name[0] ? pe->name : "?"),
                  cx, cy, 13, (Color){ 150, 220, 150, 255 }); cy += 16;
         DrawText(TextFormat("    score %d   rx %.1f Hz", pe->score, pe->rx_hz),
                  cx, cy, 13, (Color){ 180, 180, 195, 255 }); cy += 18;
@@ -84,6 +83,7 @@ static void print_usage(const char *prog) {
     printf("  -udp <port>    UDP base port (default: 19410)\n");
     printf("  -mp            Enable LAN multiplayer (share drone position with peers)\n");
     printf("  -mp-port <p>   Multiplayer UDP broadcast port (default: %d)\n", MP_DEFAULT_PORT);
+    printf("  -name <name>   Player name for multiplayer (default: login name)\n");
     printf("  -n <count>     Number of vehicles (default: 1, max: %d)\n", MAX_VEHICLES);
     printf("  -mc            Multicopter model (default)\n");
     printf("  -fw            Fixed-wing model\n");
@@ -206,6 +206,7 @@ int main(int argc, char *argv[]) {
     bool ghost_mode = false;
     bool mp_enabled = false;
     uint16_t mp_port = MP_DEFAULT_PORT;
+    const char *player_name = NULL;  // NULL -> mp_init defaults to login name
 
     for (int i = 1; i < argc; i++) {
         if (strcmp(argv[i], "-udp") == 0 && i + 1 < argc) {
@@ -214,6 +215,8 @@ int main(int argc, char *argv[]) {
             mp_enabled = true;
         } else if (strcmp(argv[i], "-mp-port") == 0 && i + 1 < argc) {
             mp_port = (uint16_t)atoi(argv[++i]);
+        } else if (strcmp(argv[i], "-name") == 0 && i + 1 < argc) {
+            player_name = argv[++i];
         } else if (strcmp(argv[i], "-n") == 0 && i + 1 < argc) {
             vehicle_count = atoi(argv[++i]);
             if (vehicle_count < 1) vehicle_count = 1;
@@ -545,7 +548,7 @@ int main(int argc, char *argv[]) {
     uint32_t peer_slot_session[MAX_VEHICLES];
     memset(peer_slot_session, 0, sizeof(peer_slot_session));
     if (mp_enabled) {
-        if (mp_init(&mp, mp_port, sources[0].sysid, NULL) == 0) {
+        if (mp_init(&mp, mp_port, sources[0].sysid, player_name) == 0) {
             mp_active = true;
             printf("Multiplayer: broadcasting drone position on UDP port %u\n", mp_port);
         } else {
